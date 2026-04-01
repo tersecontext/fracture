@@ -21,7 +21,7 @@ defaults:
   max_recursion_depth: 4
   max_correction_rounds: 2
 redis:
-  url: "redis://localhost:6379"
+  url: "redis://redis:6379"
   input_stream: "stream:breakdown-approved"
   output_stream: "stream:fracture-results"
   consumer_group: "fracture"
