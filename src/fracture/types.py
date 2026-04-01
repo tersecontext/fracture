@@ -318,6 +318,31 @@ class ModelConfig:
 
 
 @dataclass
+class RedisConfig:
+    url: str
+    input_stream: str
+    output_stream: str       # empty string = don't publish results
+    consumer_group: str
+    consumer_name: str
+    block_ms: int = 5000
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+    @classmethod
+    def from_json(cls, data: str | dict) -> "RedisConfig":
+        d: dict = json.loads(data) if isinstance(data, str) else data
+        return cls(
+            url=d["url"],
+            input_stream=d["input_stream"],
+            output_stream=d.get("output_stream", ""),
+            consumer_group=d["consumer_group"],
+            consumer_name=d["consumer_name"],
+            block_ms=int(d.get("block_ms", 5000)),
+        )
+
+
+@dataclass
 class FractureConfig:
     tersecontext_endpoint: str
     project_dir: str
@@ -327,6 +352,7 @@ class FractureConfig:
     max_parallel_lanes: int
     max_recursion_depth: int
     max_correction_rounds: int
+    redis: RedisConfig | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -334,6 +360,7 @@ class FractureConfig:
     @classmethod
     def from_json(cls, data: str | dict) -> "FractureConfig":
         d: dict = json.loads(data) if isinstance(data, str) else data
+        redis_data = d.get("redis")
         return cls(
             tersecontext_endpoint=d["tersecontext_endpoint"],
             project_dir=d["project_dir"],
@@ -343,4 +370,5 @@ class FractureConfig:
             max_parallel_lanes=int(d["max_parallel_lanes"]),
             max_recursion_depth=int(d["max_recursion_depth"]),
             max_correction_rounds=int(d["max_correction_rounds"]),
+            redis=RedisConfig.from_json(redis_data) if redis_data is not None else None,
         )
