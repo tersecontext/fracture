@@ -9,28 +9,46 @@ Containerize Fracture so its Redis consumer can reach Breakdown's internal Redis
 
 ## Approach
 
-Fracture gets its own `docker-compose.yml` that joins Breakdown's Docker network (`breakdown_default`) as an external network. No changes to Breakdown's `docker-compose.yml` are required.
+Fracture gets its own `docker-compose.yml` that joins Breakdown's Docker network as an external network. No changes to Breakdown's `docker-compose.yml` are required.
 
 ## Prerequisites
 
-- `bd` must be installed on the host before running `docker compose up`. The default expected path is `~/go/bin/bd`. If installed elsewhere, set `BD_BIN=/path/to/bd` in the shell or a `.env` file before starting.
-- `ANTHROPIC_API_KEY` must be exported in the host shell (or placed in a `.env` file) before running `docker compose up`. If missing, the container starts successfully but fails at the first LLM call with an authentication error — no message is lost (the consumer does not ack until processing completes), but the error will appear in logs.
+- `bd` must be installed on the host before running `docker compose up`. The default expected path is `$HOME/go/bin/bd`. If installed elsewhere, set `BD_BIN=/path/to/bd` in the shell or a `.env` file before starting.
+- `ANTHROPIC_API_KEY` must be exported in the host shell (or placed in a `.env` file) before running `docker compose up`. If missing, the container starts but fails at the first LLM call. **The consumer acks on both success and failure**, so a message that fails due to a missing API key will be acked and not retried. Ensure the key is set before starting.
+- Breakdown must be running before starting Fracture. Confirm the Docker network name with `docker network ls` after starting Breakdown — the default is `breakdown_default` (derived from the compose project name). Update the `networks:` block in `docker-compose.yml` if it differs.
 
 ## Files
 
 Three new/changed files in the fracture repo:
 
-1. **`Dockerfile`** — builds from `python:3.12-slim`, installs fracture and its dependencies, sets working dir to `/app`, entrypoint to `python -m fracture.consumer --config /app/fracture.yaml`.
+1. **`Dockerfile`** — builds from `python:3.12-slim`, installs fracture via `pip install .` (not `-e`), sets working dir to `/app`, entrypoint `python -m fracture.consumer --config /app/fracture.yaml`. `fracture.yaml` is not baked into the image — it is expected at `/app/fracture.yaml` via the bind-mount at runtime. Running the image standalone without compose requires manually providing the config.
 
 2. **`docker-compose.yml`** — single `fracture` service:
-   - Joins `breakdown_default` as an external network (gives access to `redis://redis:6379`)
-   - Bind-mounts `.:/app` read-write (the container writes audit logs to `.fracture/logs/` and `bd` writes to `.beads/`)
-   - Bind-mounts `${BD_BIN:-~/go/bin/bd}:/usr/local/bin/bd:ro` — path is configurable via `BD_BIN` env var
-   - Adds `extra_hosts: host.docker.internal:host-gateway` (TerseContext on host port 8090)
-   - Passes `ANTHROPIC_API_KEY` from host environment (name only, no value in compose file)
-   - `restart: unless-stopped`
+   ```yaml
+   services:
+     fracture:
+       build: .
+       volumes:
+         - .:/app
+         - ${BD_BIN:-${HOME}/go/bin/bd}:/usr/local/bin/bd:ro
+       environment:
+         - ANTHROPIC_API_KEY
+       extra_hosts:
+         - "host.docker.internal:host-gateway"
+       networks:
+         - breakdown
+       restart: unless-stopped
 
-3. **`fracture.yaml`** — change `redis.url` from `redis://localhost:6379` to `redis://redis:6379`. This change is intentional and permanent; the container is the supported way to run the consumer. For host-based debugging, pass `--config` pointing to a local override file with `redis.url: redis://localhost:6379`.
+   networks:
+     breakdown:
+       external: true
+       name: breakdown_default
+   ```
+   - `.:/app` is read-write — the container writes audit logs to `.fracture/logs/` and `bd` writes to `.beads/`
+   - `${BD_BIN:-${HOME}/go/bin/bd}` uses shell variable expansion (supported by Compose); `~` is not used because Compose does not expand tilde in bind-mount paths
+   - The container runs as root (default for `python:3.12-slim`); the bind-mounted host directory must be writable by uid 0
+
+3. **`fracture.yaml`** — change `redis.url` from `redis://localhost:6379` to `redis://redis:6379`. This is intentional and permanent; the container is the supported way to run the consumer. For host-based debugging, pass `--config` pointing to a separate override file with `redis.url: redis://localhost:6379`.
 
 ## Networking
 
@@ -42,19 +60,20 @@ Three new/changed files in the fracture repo:
 
 ## `bd` Binary
 
-Bind-mounted from the host (path controlled by `BD_BIN` env var, defaulting to `~/go/bin/bd`) to `/usr/local/bin/bd` (read-only). This avoids pinning a release version in the image and means `bd` updates on the host are immediately available to the container.
+Bind-mounted from the host (path controlled by `BD_BIN` env var, defaulting to `$HOME/go/bin/bd`) to `/usr/local/bin/bd` (read-only). This avoids pinning a release version in the image and means `bd` updates on the host are immediately available to the container.
 
-`beads.py` prepends `~/go/bin` (i.e. `/root/go/bin` in the container) to PATH before each subprocess call. This directory does not exist in the container, but the prepend is harmless — `/usr/local/bin` remains in PATH from the base image, so `bd` is found there. No code changes to `beads.py` are required.
+`beads.py` prepends `$HOME/go/bin` (resolves to `/root/go/bin` in the container) to PATH before each subprocess call. That directory does not exist in the container, but the prepend is harmless — `/usr/local/bin` remains in PATH from the base image, so `bd` is found there. No code changes to `beads.py` are required.
 
-Note: `bd` upgrades on the host take effect immediately on the next container message (no restart required). Coordinate `bd` upgrades with a consumer restart if the new version requires a `.beads` schema migration.
+`bd` upgrades on the host take effect on the next message processed. Coordinate upgrades with a container restart if the new version requires a `.beads` schema migration.
 
 ## `.beads` Database
 
-The fracture project directory is bind-mounted to `/app`. The container's working directory is `/app`, so `project_dir: "."` in `fracture.yaml` resolves correctly and `bd` commands operate against the host `.beads` db. Whittler, running on the host, reads from the same db with no changes.
+The fracture project directory is bind-mounted to `/app`. The container's working directory is `/app`, so `project_dir: "."` in `fracture.yaml` resolves correctly and `bd` commands operate against the host `.beads` db. Whittler, running on the host, reads from the same db with no changes required.
 
 ## Environment Variables
 
 - `ANTHROPIC_API_KEY` — passed through from host shell; required when `model.provider: claude`.
+- `BD_BIN` — optional; overrides the path to the `bd` binary on the host. Defaults to `$HOME/go/bin/bd`.
 
 ## What Is Not Changed
 
