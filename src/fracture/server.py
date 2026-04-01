@@ -6,7 +6,6 @@ Wires together all Fracture modules into a FastMCP server with stdio transport.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict
 from typing import Any
