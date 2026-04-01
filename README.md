@@ -1,6 +1,6 @@
 # fracture
 
-An MCP server that decomposes large tasks into dependency-ordered beads. It queries [TerseContext](https://github.com/tersecontext/tersecontext) for codebase intelligence, calls an LLM to reason about how to split the work, derives a dependency graph from write-set overlap, and creates the resulting tasks in [`bd`](https://github.com/tersecontext/beads).
+An MCP server that decomposes large tasks into dependency-ordered beads. It queries [TerseContext](https://github.com/tersecontext/tersecontext) for codebase intelligence, calls an LLM to reason about how to split the work, derives a dependency graph from write-set overlap, and creates the resulting tasks in [`bd`](https://github.com/steveyegge/beads).
 
 Fracture does **not** execute beads, manage worktrees, or spawn agents. It only plans.
 
@@ -36,7 +36,11 @@ Beads in the same phase have no write-set overlap and can run in parallel.
 ## Requirements
 
 - Python 3.11+
-- [`bd`](https://github.com/tersecontext/beads) CLI in PATH
+- [`bd`](https://github.com/steveyegge/beads) CLI in PATH — install via:
+  ```bash
+  go install github.com/steveyegge/beads/cmd/bd@latest
+  ```
+  Verify: `bd --version`
 - TerseContext running locally (default: `http://localhost:8000`)
 - Anthropic API key, or a local OpenAI-compatible model endpoint
 
