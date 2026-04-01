@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import signal
 import socket
 from typing import Any
@@ -26,7 +27,7 @@ from fracture.pipeline import run_decompose_pipeline
 from fracture.planner import Planner
 from fracture.recursion import RecursionEngine
 from fracture.tersecontext import TerseContextClient
-from fracture.types import RedisConfig
+from fracture.types import CodebaseContext, RedisConfig
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,25 @@ def _decode_message(fields: dict[bytes, bytes]) -> dict[str, Any]:
         else:
             decoded[key] = val
     return decoded
+
+
+# Matches bare file paths like "src/foo/bar.go" or "internal/cost/tiers.go"
+_FILE_PATH_RE = re.compile(r"^\s*([\w./\-]+\.\w+)\s*$", re.MULTILINE)
+
+
+def _parse_tc_context(tc_context: str) -> CodebaseContext:
+    """Build a CodebaseContext from the tc_context string in a Redis message.
+
+    Extracts any file paths present in the text into file_tree.
+    The full text is kept as architecture_summary for the LLM prompts.
+    """
+    file_tree = [m.group(1) for m in _FILE_PATH_RE.finditer(tc_context)]
+    return CodebaseContext(
+        file_tree=file_tree,
+        search_results=[],
+        dependency_edges=[],
+        architecture_summary=tc_context,
+    )
 
 
 def _build_artifacts(research: dict | str) -> list[dict]:
@@ -171,6 +191,7 @@ class FractureConsumer:
         task = msg.get("description", "")
         project = msg.get("repo", "")
         artifacts = _build_artifacts(msg.get("research", {}))
+        context = _parse_tc_context(msg.get("tc_context", ""))
 
         # Fix 2: Validate required fields before running pipeline
         if not task or not project:
@@ -197,6 +218,7 @@ class FractureConsumer:
                 task=task,
                 project=project,
                 artifacts=artifacts,
+                context=context,
                 analyzer=analyzer,
                 planner=planner,
                 instructor=instructor,

@@ -53,6 +53,7 @@ class Analyzer:
         task: str,
         project: str,
         artifacts: list[dict] | None = None,
+        context: CodebaseContext | None = None,
     ) -> list[Unit]:
         """Decompose a task into validated Units.
 
@@ -83,9 +84,10 @@ class Analyzer:
                            unparseable JSON.
         """
         # ---------------------------------------------------------------
-        # Step 1: Get codebase context
+        # Step 1: Get codebase context (use pre-built if provided)
         # ---------------------------------------------------------------
-        context = await self._get_context(task, project, artifacts)
+        if context is None:
+            context = await self._get_context(task, project, artifacts)
 
         # ---------------------------------------------------------------
         # Step 2 & 3: Build prompt and call model

@@ -16,6 +16,7 @@ from fracture.planner import Planner
 from fracture.recursion import RecursionEngine
 from fracture.tersecontext import TerseContextClient
 from fracture.types import (
+    CodebaseContext,
     FractureMetadata,
 )
 
@@ -35,6 +36,7 @@ async def run_decompose_pipeline(
     fracture_logger: FractureLogger,
     tc_client: TerseContextClient,
     config: Any,
+    context: CodebaseContext | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run the full decompose pipeline and return a result dict.
@@ -55,7 +57,7 @@ async def run_decompose_pipeline(
                         phases, conflicts, units, edges
     """
     # Step 1: Analyze task into units
-    units = await analyzer.analyze(task, project, artifacts)
+    units = await analyzer.analyze(task, project, artifacts, context=context)
     if not units:
         raise ValueError("Analyzer returned no units for the given task.")
 
@@ -90,8 +92,9 @@ async def run_decompose_pipeline(
     bead_ids: list[str] = []
 
     if not dry_run:
-        # Step 7a: Get codebase context
-        context = await tc_client.get_context(task, project)
+        # Step 7a: Use context from message, or fall back to a fresh TC query
+        if context is None:
+            context = await tc_client.get_context(task, project)
 
         # Step 7b: Generate plans
         plans = await planner.generate_plans(units, edges, context)
