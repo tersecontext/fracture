@@ -70,6 +70,9 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
 
     mcp = FastMCP("fracture")
 
+    def _model_name() -> str:
+        return config.model.claude_model if config.model.provider == "claude" else config.model.local_model
+
     # -----------------------------------------------------------------------
     # Tool: decompose
     # -----------------------------------------------------------------------
@@ -103,6 +106,8 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
         """
         # Step 1: Analyze task into units
         units = await analyzer.analyze(task, project, artifacts)
+        if not units:
+            raise DecompositionError("Analyzer returned no units for the given task.")
 
         # Step 2: Derive dependency edges from write-set overlap
         edges = derive_dependencies(units)
@@ -181,17 +186,19 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                 phase_num = unit_phase.get(idx, 1)
 
                 # Find which bead IDs this unit depends on
-                dep_bead_ids = [
-                    unit_bead_id[dep_idx]
-                    for dep_idx in unit_deps.get(idx, [])
-                    if dep_idx in unit_bead_id
-                ]
+                dep_bead_ids = []
+                for dep_idx in unit_deps.get(idx, []):
+                    if dep_idx in unit_bead_id:
+                        dep_bead_ids.append(unit_bead_id[dep_idx])
+                    else:
+                        import sys
+                        print(f"[fracture] WARNING: dependency unit {dep_idx} not yet created when building bead for unit {idx} — dependency link dropped", file=sys.stderr)
 
                 # Build FractureMetadata for notes
                 metadata = FractureMetadata(
                     file_manifest=unit.file_manifest,
                     phase=phase_num,
-                    parallel_with=[],
+                    parallel_with=[],  # TODO: populate after all bead IDs are known
                     decomposition_id=decomposition_id,
                     estimated_hours=unit.estimated_hours,
                 )
@@ -204,7 +211,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                     "deps": dep_bead_ids,
                     "description": unit.description,
                     "design": plan_md,
-                    "acceptance": unit.deliverable,
+                    "acceptance": instr_md,
                     "notes": json.dumps(notes_data),
                     "_unit_idx": idx,  # internal, used for id mapping
                 }
@@ -216,7 +223,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                 for bd in all_bead_data
             ]
 
-            # Step 7c: Create beads transactionally
+            # Step 7d: Create beads transactionally
             created_ids = await beads_client.create_beads_transactional(clean_bead_data)
 
             # Map unit index → bead_id for phase population
@@ -248,9 +255,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
         ]
         fracture_logger.log_decomposition(
             task=task,
-            model_used=config.model.claude_model
-            if config.model.provider == "claude"
-            else config.model.local_model,
+            model_used=_model_name(),
             dry_run=dry_run,
             beads=beads_log,
             phases=phases,
@@ -306,7 +311,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
 
             unit = Unit(
                 title=bead.get("title", bead_id),
-                description=bead.get("body", ""),
+                description=bead.get("body") or bead.get("description") or "",
                 deliverable="",
                 file_manifest=file_manifest,
                 estimated_hours=0.0,
@@ -377,6 +382,8 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
 
         # Step 2 & 3: Run the same decompose pipeline
         units = await analyzer.analyze(sub_task, project, artifacts=None)
+        if not units:
+            raise DecompositionError("Analyzer returned no units for the given task.")
         edges = derive_dependencies(units)
         units, edges = await recursion_engine.process(units, edges, project, depth=0)
         conflicts = validate_graph(units, edges)
@@ -420,16 +427,18 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                 instr_md = instructions[idx] if idx < len(instructions) else ""
                 phase_num = unit_phase.get(idx, 1)
 
-                dep_bead_ids = [
-                    unit_bead_id[dep_idx]
-                    for dep_idx in unit_deps.get(idx, [])
-                    if dep_idx in unit_bead_id
-                ]
+                dep_bead_ids = []
+                for dep_idx in unit_deps.get(idx, []):
+                    if dep_idx in unit_bead_id:
+                        dep_bead_ids.append(unit_bead_id[dep_idx])
+                    else:
+                        import sys
+                        print(f"[fracture] WARNING: dependency unit {dep_idx} not yet created when building bead for unit {idx} — dependency link dropped", file=sys.stderr)
 
                 metadata = FractureMetadata(
                     file_manifest=unit.file_manifest,
                     phase=phase_num,
-                    parallel_with=[],
+                    parallel_with=[],  # TODO: populate after all bead IDs are known
                     decomposition_id=sub_task_hash,
                     estimated_hours=unit.estimated_hours,
                 )
@@ -446,7 +455,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                     "deps": dep_bead_ids,
                     "description": unit.description,
                     "design": plan_md,
-                    "acceptance": unit.deliverable,
+                    "acceptance": instr_md,
                     "notes": json.dumps(notes_data),
                     "_unit_idx": idx,
                 })
@@ -487,9 +496,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
         ]
         fracture_logger.log_decomposition(
             task=sub_task,
-            model_used=config.model.claude_model
-            if config.model.provider == "claude"
-            else config.model.local_model,
+            model_used=_model_name(),
             dry_run=dry_run,
             beads=beads_log,
             phases=phases,
