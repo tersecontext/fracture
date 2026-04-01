@@ -4,6 +4,16 @@ An MCP server that decomposes large tasks into dependency-ordered beads. It quer
 
 Fracture does **not** execute beads, manage worktrees, or spawn agents. It only plans.
 
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| Python 3.11+ | `python --version` |
+| Go toolchain | Required to install `bd`. `go version` |
+| [`bd` CLI](https://github.com/steveyegge/beads) | `go install github.com/steveyegge/beads/cmd/bd@latest` |
+| [TerseContext](https://github.com/tersecontext/tersecontext) | Must be running locally (default `http://localhost:8000`). See TerseContext's `make up`. |
+| Anthropic API key | Set as `ANTHROPIC_API_KEY` in environment |
+
 ## How it works
 
 ```
