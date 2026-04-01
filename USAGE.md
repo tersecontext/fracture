@@ -72,13 +72,17 @@ bd init
 
 ---
 
-## 3. Start the server
+## 3. Start Fracture
+
+There are two ways to run Fracture depending on how tasks arrive.
+
+### Option A: MCP server (Claude Desktop / Claude Code)
 
 ```bash
 python src/fracture/server.py
 ```
 
-This starts the MCP server on stdio. It is designed to be driven by an MCP client (Claude Desktop, Claude Code, etc.), not called directly from a terminal.
+Starts the MCP server on stdio. Designed to be driven by an MCP client — not called directly from a terminal.
 
 ### Add to Claude Desktop
 
@@ -110,6 +114,63 @@ In `.claude/settings.json` in your project:
   }
 }
 ```
+
+### Option B: Redis Stream consumer (Breakdown integration)
+
+If you are running [Breakdown](https://github.com/tersecontext/breakdown), Fracture can consume approved tasks automatically. Add the `redis` section to `fracture.yaml`:
+
+```yaml
+redis:
+  url: "redis://localhost:6379"
+  input_stream: "stream:breakdown-approved"
+  output_stream: "stream:fracture-results"
+  consumer_group: "fracture"
+  consumer_name: ""          # defaults to hostname
+  block_ms: 5000
+```
+
+Then run:
+
+```bash
+python src/fracture/consumer.py --config fracture.yaml
+```
+
+The consumer runs until SIGINT/SIGTERM. Each approved task from Breakdown is automatically decomposed and beads are created. Results (bead IDs, phases, any conflicts) are published to `stream:fracture-results`.
+
+**Message flow:**
+
+```
+Breakdown (approve task)
+  → stream:breakdown-approved
+    → Fracture consumer
+      → decompose pipeline
+        → bd (beads created)
+      → stream:fracture-results
+```
+
+**What comes in from Breakdown:**
+
+| Field | Maps to |
+|-------|---------|
+| `description` | `task` |
+| `repo` | `project` |
+| `research.affected_code[]` | `artifacts` (file hints for the analyzer) |
+
+**What goes out to `stream:fracture-results`:**
+
+```json
+{
+  "task_id": "uuid from Breakdown",
+  "decomposition_id": "sha256 hash",
+  "bead_ids": "[\"proj-abc\", \"proj-def\"]",
+  "unit_count": "4",
+  "phases": "[{\"phase_number\": 1, ...}]",
+  "conflicts": "[]",
+  "status": "ok"
+}
+```
+
+On failure: `{"task_id": "...", "status": "error", "error": "message"}`.
 
 ---
 
