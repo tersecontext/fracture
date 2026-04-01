@@ -105,6 +105,7 @@ def _parse_model(data: dict) -> ModelConfig:
         claude_api_key_env=claude_api_key_env,
         local_endpoint=local_endpoint,
         local_model=local_model,
+        local_api_key=local_section.get("api_key", ""),
         max_tokens=max_tokens,
     )
 
