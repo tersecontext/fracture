@@ -12,7 +12,6 @@ import json
 import logging
 import signal
 import socket
-import sys
 from dataclasses import asdict
 from typing import Any
 
@@ -190,19 +189,20 @@ async def _run_decompose(
             if dep_idx in unit_bead_id:
                 dep_bead_ids.append(unit_bead_id[dep_idx])
             else:
-                # TODO: This case arises when a dependency unit appears later in
+                # This case arises when a dependency unit appears later in
                 # phase_order than the dependent, which should not happen if phases
-                # are computed correctly.  Log a warning rather than silently drop.
-                print(
-                    f"[fracture/consumer] WARNING: dependency unit {dep_idx} not yet "
-                    f"created when building bead for unit {idx} — dependency link dropped",
-                    file=sys.stderr,
+                # are computed correctly.
+                logger.warning(
+                    "dependency unit %d not yet created when building bead for unit %d"
+                    " — dependency link dropped",
+                    dep_idx,
+                    idx,
                 )
 
         metadata = FractureMetadata(
             file_manifest=unit.file_manifest,
             phase=phase_num,
-            parallel_with=[],  # TODO: populate after all bead IDs are known
+            parallel_with=[],  # parallel_with requires a second pass after bead IDs are known; not yet implemented
             decomposition_id=decomposition_id,
             estimated_hours=unit.estimated_hours,
         )
