@@ -175,7 +175,7 @@ class Analyzer:
             search_results=[
                 CodeResult(
                     path=a["path"],
-                    content=a["content"],
+                    content=a.get("description", ""),
                     score=1.0,
                     node_type="file",
                 )
