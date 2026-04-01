@@ -1,0 +1,22 @@
+tersecontext:
+  endpoint: "http://localhost:8000"
+beads:
+  project_dir: "."
+model:
+  provider: "claude"
+  claude:
+    model: "claude-sonnet-4-20250514"
+    api_key_env: "ANTHROPIC_API_KEY"
+    max_tokens: 4096
+  local:
+    endpoint: "http://localhost:11434/v1"
+    model: "qwen3.5"
+    api_key: ""
+    max_tokens: 4096
+log:
+  dir: ".fracture/logs"
+defaults:
+  max_bead_hours: 3
+  max_parallel_lanes: 4
+  max_recursion_depth: 4
+  max_correction_rounds: 2
