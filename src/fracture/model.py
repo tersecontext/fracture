@@ -71,8 +71,13 @@ class ModelClient:
     async def _call_claude(self, system_prompt: str, user_message: str) -> str:
         """Call the Anthropic Messages API."""
         api_key = os.environ[self._config.claude_api_key_env]
+        # API keys start with "sk-ant-"; OAuth tokens from Claude CLI use Bearer auth
+        if api_key.startswith("sk-ant-"):
+            auth_header = {"x-api-key": api_key}
+        else:
+            auth_header = {"Authorization": f"Bearer {api_key}"}
         headers = {
-            "x-api-key": api_key,
+            **auth_header,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
