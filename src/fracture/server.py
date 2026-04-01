@@ -127,11 +127,12 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
 
         # Step 6: Idempotency check
         task_hash = hashlib.sha256(task.encode()).hexdigest()[:12]
-        existing = await beads_client.list_open_beads(decomposition_id=task_hash)
-        if existing:
-            raise DecompositionError(
-                f"Task already decomposed: {len(existing)} beads open (id={task_hash})"
-            )
+        if not dry_run:
+            existing = await beads_client.list_open_beads(decomposition_id=task_hash)
+            if existing:
+                raise DecompositionError(
+                    f"Task already decomposed: {len(existing)} beads open (id={task_hash})"
+                )
 
         decomposition_id = task_hash
         bead_ids: list[str] = []
@@ -367,8 +368,15 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
         bead = await beads_client.show_bead(bead_id)
         sub_task = bead.get("body") or bead.get("description") or bead.get("title", "")
 
+        # Step 1b: Idempotency check
+        sub_task_hash = hashlib.sha256(sub_task.encode()).hexdigest()[:12]
+        if not dry_run:
+            existing = await beads_client.list_open_beads(decomposition_id=sub_task_hash)
+            if existing:
+                raise DecompositionError(f"Task already decomposed: {len(existing)} beads open")
+
         # Step 2 & 3: Run the same decompose pipeline
-        units = await analyzer.analyze(sub_task, project)
+        units = await analyzer.analyze(sub_task, project, artifacts=None)
         edges = derive_dependencies(units)
         units, edges = await recursion_engine.process(units, edges, project, depth=0)
         conflicts = validate_graph(units, edges)
@@ -380,7 +388,6 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
         }
         phases = determine_phases(units, edges)
 
-        sub_task_hash = hashlib.sha256(f"{bead_id}:{sub_task}".encode()).hexdigest()[:12]
         sub_bead_ids: list[str] = []
 
         if not dry_run:
@@ -409,7 +416,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
             all_bead_data: list[dict[str, Any]] = []
             for idx in phase_order:
                 unit = units[idx]
-                plan_md = plans[idx] if idx < len(plans) else ""
+                instr_md = instructions[idx] if idx < len(instructions) else ""
                 phase_num = unit_phase.get(idx, 1)
 
                 dep_bead_ids = [
@@ -437,7 +444,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                     "priority": phase_num,
                     "deps": dep_bead_ids,
                     "description": unit.description,
-                    "design": plan_md,
+                    "design": instr_md,
                     "acceptance": unit.deliverable,
                     "notes": json.dumps(notes_data),
                     "_unit_idx": idx,
@@ -497,6 +504,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
             "sub_bead_ids": sub_bead_ids,
             "unit_count": len(units),
             "phases": [asdict(p) for p in phases],
+            "conflicts": validation_result["conflicts"],
         }
 
     # -----------------------------------------------------------------------
