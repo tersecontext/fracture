@@ -87,13 +87,11 @@ Set the API key in your environment:
 export ANTHROPIC_API_KEY=sk-...
 ```
 
-## Running the MCP server
+## Running
 
-```bash
-python -m fracture.server
-```
+Fracture has two entry points depending on how it receives work.
 
-Or via stdio (for MCP clients):
+### MCP server (Claude Desktop / Claude Code)
 
 ```bash
 python src/fracture/server.py
@@ -111,6 +109,32 @@ Add to your MCP client config (e.g. Claude Desktop):
   }
 }
 ```
+
+### Redis Stream consumer (Breakdown integration)
+
+Fracture can consume approved tasks directly from [Breakdown](https://github.com/tersecontext/breakdown) via Redis Streams — no MCP client needed.
+
+```bash
+python src/fracture/consumer.py --config fracture.yaml
+```
+
+Add the Redis section to `fracture.yaml`:
+
+```yaml
+redis:
+  url: "redis://localhost:6379"
+  input_stream: "stream:breakdown-approved"
+  output_stream: "stream:fracture-results"
+  consumer_group: "fracture"
+  consumer_name: ""          # defaults to hostname
+  block_ms: 5000
+```
+
+When running, the consumer:
+1. Reads approved tasks from `stream:breakdown-approved`
+2. Runs the full decompose pipeline for each task
+3. Publishes results (bead IDs, phases, conflicts) to `stream:fracture-results`
+4. Acknowledges every message — failed decompositions are reported to the output stream rather than retried
 
 ## MCP Tools
 
