@@ -298,6 +298,7 @@ class ModelConfig:
     local_endpoint: str
     local_model: str
     max_tokens: int
+    local_api_key: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -312,6 +313,7 @@ class ModelConfig:
             local_endpoint=d["local_endpoint"],
             local_model=d["local_model"],
             max_tokens=int(d["max_tokens"]),
+            local_api_key=d.get("local_api_key", ""),
         )
 
 
