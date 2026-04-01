@@ -1,0 +1,18 @@
+services:
+  fracture:
+    build: .
+    volumes:
+      - .:/app
+      - ${BD_BIN:-${HOME}/go/bin/bd}:/usr/local/bin/bd:ro
+    environment:
+      - ANTHROPIC_API_KEY
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - breakdown
+    restart: unless-stopped
+
+networks:
+  breakdown:
+    external: true
+    name: breakdown_default
