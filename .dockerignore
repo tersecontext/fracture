@@ -1,0 +1,6 @@
+# Exclude everything by default, then allow what the Dockerfile needs
+*
+
+!pyproject.toml
+!src/
+!src/**
