@@ -165,6 +165,8 @@ class TerseContextClient:
         Returns:
             Aggregated CodebaseContext.
         """
+        if self._available is None:
+            await self._check_available()
         if not self.is_available():
             return _empty_context()
 
@@ -221,7 +223,7 @@ class TerseContextClient:
         """Perform an async connectivity check and cache the result."""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(self._endpoint + "/files", timeout=5.0)
+                response = await client.get(self._endpoint + "/", timeout=5.0)
                 self._available = response.status_code < 500
         except Exception:
             self._available = False
