@@ -14,7 +14,7 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from fracture.dependency import derive_dependencies, rewire_dependencies
+from fracture.dependency import derive_dependencies
 from fracture.types import DependencyEdge, FractureConfig, Unit
 
 if TYPE_CHECKING:
