@@ -96,10 +96,8 @@ class ModelClient:
     async def _call_local(self, system_prompt: str, user_message: str) -> str:
         """Call an OpenAI-compatible local LLM endpoint."""
         headers: dict[str, str] = {"content-type": "application/json"}
-        if self._config.local_model and hasattr(self._config, "local_api_key"):
-            api_key = getattr(self._config, "local_api_key", None)
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
+        if self._config.local_api_key:
+            headers["Authorization"] = f"Bearer {self._config.local_api_key}"
 
         body = {
             "model": self._config.local_model,
