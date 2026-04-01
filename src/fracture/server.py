@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import asdict
 from typing import Any
 
@@ -191,7 +192,6 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                     if dep_idx in unit_bead_id:
                         dep_bead_ids.append(unit_bead_id[dep_idx])
                     else:
-                        import sys
                         print(f"[fracture] WARNING: dependency unit {dep_idx} not yet created when building bead for unit {idx} — dependency link dropped", file=sys.stderr)
 
                 # Build FractureMetadata for notes
@@ -432,7 +432,6 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                     if dep_idx in unit_bead_id:
                         dep_bead_ids.append(unit_bead_id[dep_idx])
                     else:
-                        import sys
                         print(f"[fracture] WARNING: dependency unit {dep_idx} not yet created when building bead for unit {idx} — dependency link dropped", file=sys.stderr)
 
                 metadata = FractureMetadata(
