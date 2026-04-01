@@ -416,6 +416,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
             all_bead_data: list[dict[str, Any]] = []
             for idx in phase_order:
                 unit = units[idx]
+                plan_md = plans[idx] if idx < len(plans) else ""
                 instr_md = instructions[idx] if idx < len(instructions) else ""
                 phase_num = unit_phase.get(idx, 1)
 
@@ -444,7 +445,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                     "priority": phase_num,
                     "deps": dep_bead_ids,
                     "description": unit.description,
-                    "design": instr_md,
+                    "design": plan_md,
                     "acceptance": unit.deliverable,
                     "notes": json.dumps(notes_data),
                     "_unit_idx": idx,
@@ -474,6 +475,7 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
                 ]
         else:
             plans = []
+            instructions = []
 
         beads_log = [
             {
