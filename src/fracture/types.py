@@ -292,13 +292,14 @@ class FeedbackResult:
 
 @dataclass
 class ModelConfig:
-    provider: str               # "claude" or "local"
+    provider: str               # "claude", "claude-cli", or "local"
     claude_model: str
     claude_api_key_env: str
     local_endpoint: str
     local_model: str
     max_tokens: int
     local_api_key: str = ""
+    claude_cli_path: str = "claude"  # path to claude CLI binary (claude-cli provider)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -314,6 +315,7 @@ class ModelConfig:
             local_model=d["local_model"],
             max_tokens=int(d["max_tokens"]),
             local_api_key=d.get("local_api_key", ""),
+            claude_cli_path=d.get("claude_cli_path", "claude"),
         )
 
 

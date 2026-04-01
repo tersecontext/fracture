@@ -3,7 +3,11 @@ tersecontext:
 beads:
   project_dir: "."
 model:
-  provider: "claude"
+  provider: "claude-cli"
+  cli:
+    path: "claude"
+    model: "claude-sonnet-4-20250514"
+    max_tokens: 4096
   claude:
     model: "claude-sonnet-4-20250514"
     api_key_env: "ANTHROPIC_API_KEY"

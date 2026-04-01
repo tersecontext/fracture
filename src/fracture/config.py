@@ -29,6 +29,7 @@ _DEFAULT_TERSECONTEXT_ENDPOINT = "http://localhost:8000"
 _DEFAULT_PROJECT_DIR = "."
 _DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
 _DEFAULT_CLAUDE_API_KEY_ENV = "ANTHROPIC_API_KEY"
+_DEFAULT_CLAUDE_CLI_PATH = "claude"
 _DEFAULT_LOCAL_ENDPOINT = "http://localhost:11434/v1"
 _DEFAULT_LOCAL_MODEL = "qwen3.5"
 _DEFAULT_MAX_TOKENS = 4096
@@ -86,15 +87,22 @@ def _parse_model(data: dict) -> ModelConfig:
 
     claude_section = _get(data, "model", "claude", default={}) or {}
     local_section = _get(data, "model", "local", default={}) or {}
+    cli_section = _get(data, "model", "cli", default={}) or {}
 
     claude_model: str = claude_section.get("model", _DEFAULT_CLAUDE_MODEL)
+    # For claude-cli, the model can also be specified under model.cli.model
+    if provider == "claude-cli":
+        claude_model = cli_section.get("model", claude_model)
     # Stores the env var NAME, not the value; model.py resolves the actual key
     # at call time via os.environ[config.model.claude_api_key_env].
     claude_api_key_env: str = claude_section.get("api_key_env", _DEFAULT_CLAUDE_API_KEY_ENV)
+    claude_cli_path: str = cli_section.get("path", _DEFAULT_CLAUDE_CLI_PATH)
 
     # max_tokens: use provider-specific section, fall back to the other, then default
     if provider == "claude":
         max_tokens: int = int(claude_section.get("max_tokens", _DEFAULT_MAX_TOKENS))
+    elif provider == "claude-cli":
+        max_tokens = int(cli_section.get("max_tokens", _DEFAULT_MAX_TOKENS))
     else:
         max_tokens = int(local_section.get("max_tokens", _DEFAULT_MAX_TOKENS))
 
@@ -109,6 +117,7 @@ def _parse_model(data: dict) -> ModelConfig:
         local_model=local_model,
         local_api_key=local_section.get("api_key", ""),
         max_tokens=max_tokens,
+        claude_cli_path=claude_cli_path,
     )
 
 
@@ -133,6 +142,7 @@ def _validate(config: FractureConfig) -> None:
                 f"Provider is 'claude' but environment variable '{env_var}' is not set. "
                 "Set the variable or switch to a local provider."
             )
+    # claude-cli uses the CLI's own credentials — no env var needed
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ Supports two providers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -48,6 +49,8 @@ class ModelClient:
         """Send a prompt, return the raw text response."""
         if self._config.provider == "claude":
             return await self._call_claude(system_prompt, user_message)
+        elif self._config.provider == "claude-cli":
+            return await self._call_claude_cli(system_prompt, user_message)
         else:
             return await self._call_local(system_prompt, user_message)
 
@@ -94,9 +97,36 @@ class ModelClient:
                 json=body,
                 timeout=120.0,
             )
+            if not response.is_success:
+                import logging
+                logging.getLogger(__name__).error(
+                    "Anthropic API error %s: %s", response.status_code, response.text
+                )
             response.raise_for_status()
             data = response.json()
             return data["content"][0]["text"]
+
+    async def _call_claude_cli(self, system_prompt: str, user_message: str) -> str:
+        """Call the Claude CLI in non-interactive mode using its own credentials.
+
+        Combines system + user message and pipes via stdin to avoid issues with
+        --system-prompt hanging on long/multiline prompts.
+        """
+        combined = f"{system_prompt}\n\n---\n{user_message}"
+        proc = await asyncio.create_subprocess_exec(
+            self._config.claude_cli_path,
+            "-p",
+            "--model", self._config.claude_model,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate(input=combined.encode())
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"claude CLI exited {proc.returncode}: {stderr.decode()!r}"
+            )
+        return stdout.decode().strip()
 
     async def _call_local(self, system_prompt: str, user_message: str) -> str:
         """Call an OpenAI-compatible local LLM endpoint."""
@@ -130,13 +160,13 @@ class ModelClient:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
 
 
 def _strip_markdown_fences(text: str) -> str:
-    """Remove surrounding ```json / ``` fences and trim whitespace."""
+    """Extract JSON from a response that may contain prose before/after a code block."""
     stripped = text.strip()
-    match = _FENCE_RE.match(stripped)
+    match = _FENCE_RE.search(stripped)
     if match:
         return match.group(1).strip()
     return stripped
