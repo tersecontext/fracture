@@ -153,9 +153,9 @@ def build_analyze_prompt(task: str, context: CodebaseContext) -> tuple[str, str]
             parts.append(f"{edge.from_path} → {edge.to_path} ({edge.edge_type})")
         parts.append("")
 
-    # Architecture summary
+    # Codebase context from TerseContext
     if context.architecture_summary:
-        parts.append("## Architecture Summary\n")
+        parts.append("## Codebase Context\n")
         parts.append(context.architecture_summary)
         parts.append("")
 
@@ -199,8 +199,12 @@ def build_plan_prompt(
             )
         parts.append("")
 
-    # Relevant code excerpts from context
-    if context.search_results:
+    # Codebase context from TerseContext
+    if context.architecture_summary:
+        parts.append("## Codebase Context\n")
+        parts.append(context.architecture_summary)
+        parts.append("")
+    elif context.search_results:
         parts.append("## Relevant Code Excerpts\n")
         for result in context.search_results:
             parts.append(f"--- {result.path} ---")
@@ -235,8 +239,12 @@ def build_instruct_prompt(
             parts.append(f"\n**Plan:**\n{plans[i]}")
         parts.append("")
 
-    # Relevant code context
-    if context.search_results:
+    # Codebase context from TerseContext
+    if context.architecture_summary:
+        parts.append("## Codebase Context\n")
+        parts.append(context.architecture_summary)
+        parts.append("")
+    elif context.search_results:
         parts.append("## Relevant Code Context\n")
         for result in context.search_results:
             parts.append(f"--- {result.path} ---")

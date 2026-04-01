@@ -1,5 +1,5 @@
 tersecontext:
-  endpoint: "http://host.docker.internal:8000"
+  endpoint: "http://host.docker.internal:8090"
 beads:
   project_dir: "."
 model:
