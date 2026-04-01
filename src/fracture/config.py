@@ -46,11 +46,18 @@ def _find_config_file(path: str) -> Path:
 
     Raises FileNotFoundError if none of the search locations contain a file.
     """
-    candidates: list[Path] = [
-        Path(path),
-        Path.cwd() / "fracture.yaml",
-        Path.home() / ".fracture.yaml",
-    ]
+    explicit = Path(path)
+    cwd_default = Path.cwd() / "fracture.yaml"
+
+    # Only add the explicit path as a separate candidate when it differs from
+    # the cwd default (i.e. the caller passed an absolute path or a non-default
+    # relative name).  This avoids checking the same path twice when the
+    # default argument "fracture.yaml" is used.
+    candidates: list[Path] = []
+    if explicit.is_absolute() or explicit != Path("fracture.yaml"):
+        candidates.append(explicit)
+    candidates.append(cwd_default)
+    candidates.append(Path.home() / ".fracture.yaml")
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
@@ -79,6 +86,8 @@ def _parse_model(data: dict) -> ModelConfig:
     local_section = _get(data, "model", "local", default={}) or {}
 
     claude_model: str = claude_section.get("model", _DEFAULT_CLAUDE_MODEL)
+    # Stores the env var NAME, not the value; model.py resolves the actual key
+    # at call time via os.environ[config.model.claude_api_key_env].
     claude_api_key_env: str = claude_section.get("api_key_env", _DEFAULT_CLAUDE_API_KEY_ENV)
 
     # max_tokens: use provider-specific section, fall back to the other, then default
