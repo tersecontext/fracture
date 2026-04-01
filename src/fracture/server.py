@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from dataclasses import asdict
 from typing import Any
 
@@ -20,11 +19,12 @@ except ImportError:
 from fracture.analyzer import Analyzer
 from fracture.beads import BeadsClient
 from fracture.config import load_config
-from fracture.dependency import derive_dependencies, determine_phases, validate_graph
+from fracture.dependency import validate_graph
 from fracture.feedback import FeedbackProcessor
 from fracture.instructor import Instructor
 from fracture.logger import FractureLogger
 from fracture.model import ModelClient
+from fracture.pipeline import run_decompose_pipeline
 from fracture.planner import Planner
 from fracture.recursion import RecursionEngine
 from fracture.tersecontext import TerseContextClient
@@ -71,9 +71,6 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
 
     mcp = FastMCP("fracture")
 
-    def _model_name() -> str:
-        return config.model.claude_model if config.model.provider == "claude" else config.model.local_model
-
     # -----------------------------------------------------------------------
     # Tool: decompose
     # -----------------------------------------------------------------------
@@ -105,177 +102,23 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
             Dict with decomposition result including units, edges, phases,
             bead_ids (empty on dry_run), and decomposition_id.
         """
-        # Step 1: Analyze task into units
-        units = await analyzer.analyze(task, project, artifacts)
-        if not units:
-            raise DecompositionError("Analyzer returned no units for the given task.")
-
-        # Step 2: Derive dependency edges from write-set overlap
-        edges = derive_dependencies(units)
-
-        # Step 3: Process recursion (expand compound units)
-        units, edges = await recursion_engine.process(
-            units, edges, project, depth=0
-        )
-
-        # Step 4: Validate graph and fix conflicts
-        conflicts = validate_graph(units, edges)
-        # validate_graph returns list[tuple[int, int, set[str]]] per actual signature
-        validation_result: dict[str, Any] = {
-            "conflicts": [
-                {"unit_a": a, "unit_b": b, "shared_files": list(files)}
-                for a, b, files in conflicts
-            ]
-        }
-
-        # Step 5: Determine execution phases
-        phases = determine_phases(units, edges)
-
-        # Step 6: Idempotency check
-        task_hash = hashlib.sha256(task.encode()).hexdigest()[:12]
-        if not dry_run:
-            existing = await beads_client.list_open_beads(decomposition_id=task_hash)
-            if existing:
-                raise DecompositionError(
-                    f"Task already decomposed: {len(existing)} beads open (id={task_hash})"
-                )
-
-        decomposition_id = task_hash
-        bead_ids: list[str] = []
-
-        if not dry_run:
-            # Step 7a: Get codebase context for planner/instructor
-            context = await tc_client.get_context(task, project)
-
-            # Step 7b: Generate plans
-            plans = await planner.generate_plans(units, edges, context)
-
-            # Step 7c: Generate CLAUDE.md instructions
-            instructions = await instructor.generate_instructions(units, plans, context)
-
-            # Build bead data list in topological order (phases already ordered)
-            # Map unit index → phase number
-            unit_phase: dict[int, int] = {}
-            for phase in phases:
-                for uid in phase.bead_ids:
-                    unit_phase[int(uid)] = phase.phase_number
-
-            # Build unit-index → dependency unit-indices map from edges
-            # edges: from_unit depends on to_unit (to_unit must finish first)
-            unit_deps: dict[int, list[int]] = {i: [] for i in range(len(units))}
-            for edge in edges:
-                unit_deps[edge.from_unit].append(edge.to_unit)
-
-            # Create bead data in phase order
-            unit_bead_id: dict[int, str] = {}
-            all_bead_data: list[dict[str, Any]] = []
-
-            # Sort units by phase so dependencies are created before dependents
-            phase_order: list[int] = []
-            for phase in phases:
-                for uid in phase.bead_ids:
-                    phase_order.append(int(uid))
-            # Add any units not in phases (edge case)
-            for i in range(len(units)):
-                if i not in phase_order:
-                    phase_order.append(i)
-
-            for idx in phase_order:
-                unit = units[idx]
-                plan_md = plans[idx] if idx < len(plans) else ""
-                instr_md = instructions[idx] if idx < len(instructions) else ""
-                phase_num = unit_phase.get(idx, 1)
-
-                # Find which bead IDs this unit depends on
-                dep_bead_ids = []
-                for dep_idx in unit_deps.get(idx, []):
-                    if dep_idx in unit_bead_id:
-                        dep_bead_ids.append(unit_bead_id[dep_idx])
-                    else:
-                        print(f"[fracture] WARNING: dependency unit {dep_idx} not yet created when building bead for unit {idx} — dependency link dropped", file=sys.stderr)
-
-                # Build FractureMetadata for notes
-                metadata = FractureMetadata(
-                    file_manifest=unit.file_manifest,
-                    phase=phase_num,
-                    parallel_with=[],  # TODO: populate after all bead IDs are known
-                    decomposition_id=decomposition_id,
-                    estimated_hours=unit.estimated_hours,
-                )
-                notes_data = {"fracture": asdict(metadata), "decomposition_id": decomposition_id}
-
-                bead_data: dict[str, Any] = {
-                    "title": unit.title,
-                    "bead_type": "task",
-                    "priority": phase_num,
-                    "deps": dep_bead_ids,
-                    "description": unit.description,
-                    "design": plan_md,
-                    "acceptance": instr_md,
-                    "notes": json.dumps(notes_data),
-                    "_unit_idx": idx,  # internal, used for id mapping
-                }
-                all_bead_data.append(bead_data)
-
-            # Prepare clean list without internal keys for create_beads_transactional
-            clean_bead_data = [
-                {k: v for k, v in bd.items() if not k.startswith("_")}
-                for bd in all_bead_data
-            ]
-
-            # Step 7d: Create beads transactionally
-            created_ids = await beads_client.create_beads_transactional(clean_bead_data)
-
-            # Map unit index → bead_id for phase population
-            for i, idx in enumerate(phase_order):
-                if i < len(created_ids):
-                    unit_bead_id[idx] = created_ids[i]
-
-            bead_ids = created_ids
-
-            # Populate phase bead_ids with actual bead IDs
-            for phase in phases:
-                phase.bead_ids = [
-                    unit_bead_id[int(uid)]
-                    for uid in phase.bead_ids
-                    if int(uid) in unit_bead_id
-                ]
-        else:
-            plans = []
-            instructions = []
-
-        # Step 8: Log decomposition
-        beads_log = [
-            {
-                "bead_id": bead_ids[i] if i < len(bead_ids) else None,
-                "title": units[i].title,
-                "estimated_hours": units[i].estimated_hours,
-            }
-            for i in range(len(units))
-        ]
-        fracture_logger.log_decomposition(
-            task=task,
-            model_used=_model_name(),
-            dry_run=dry_run,
-            beads=beads_log,
-            phases=phases,
-            tc_queries=[],
-            validation=validation_result,
-            recursion_events=[],
-            decomposition_id=decomposition_id,
-        )
-
-        # Step 9: Return result
-        return {
-            "decomposition_id": decomposition_id,
-            "dry_run": dry_run,
-            "unit_count": len(units),
-            "bead_ids": bead_ids,
-            "phases": [asdict(p) for p in phases],
-            "conflicts": validation_result["conflicts"],
-            "units": [asdict(u) for u in units],
-            "edges": [asdict(e) for e in edges],
-        }
+        try:
+            return await run_decompose_pipeline(
+                task=task,
+                project=project,
+                artifacts=artifacts,
+                analyzer=analyzer,
+                planner=planner,
+                instructor=instructor,
+                recursion_engine=recursion_engine,
+                beads_client=beads_client,
+                fracture_logger=fracture_logger,
+                tc_client=tc_client,
+                config=config,
+                dry_run=dry_run,
+            )
+        except ValueError as exc:
+            raise DecompositionError(str(exc)) from exc
 
     # -----------------------------------------------------------------------
     # Tool: validate
@@ -373,146 +216,40 @@ def create_server(config_path: str = "fracture.yaml") -> FastMCP:
         bead = await beads_client.show_bead(bead_id)
         sub_task = bead.get("body") or bead.get("description") or bead.get("title", "")
 
-        # Step 1b: Idempotency check
-        sub_task_hash = hashlib.sha256(sub_task.encode()).hexdigest()[:12]
-        if not dry_run:
-            existing = await beads_client.list_open_beads(decomposition_id=sub_task_hash)
-            if existing:
-                raise DecompositionError(f"Task already decomposed: {len(existing)} beads open")
+        try:
+            result = await run_decompose_pipeline(
+                task=sub_task,
+                project=project,
+                artifacts=None,
+                analyzer=analyzer,
+                planner=planner,
+                instructor=instructor,
+                recursion_engine=recursion_engine,
+                beads_client=beads_client,
+                fracture_logger=fracture_logger,
+                tc_client=tc_client,
+                config=config,
+                dry_run=dry_run,
+            )
+        except ValueError as exc:
+            raise DecompositionError(str(exc)) from exc
 
-        # Step 2 & 3: Run the same decompose pipeline
-        units = await analyzer.analyze(sub_task, project, artifacts=None)
-        if not units:
-            raise DecompositionError("Analyzer returned no units for the given task.")
-        edges = derive_dependencies(units)
-        units, edges = await recursion_engine.process(units, edges, project, depth=0)
-        conflicts = validate_graph(units, edges)
-        validation_result: dict[str, Any] = {
-            "conflicts": [
-                {"unit_a": a, "unit_b": b, "shared_files": list(files)}
-                for a, b, files in conflicts
-            ]
-        }
-        phases = determine_phases(units, edges)
+        sub_bead_ids = result["bead_ids"]
 
-        sub_bead_ids: list[str] = []
-
-        if not dry_run:
-            context = await tc_client.get_context(sub_task, project)
-            plans = await planner.generate_plans(units, edges, context)
-            instructions = await instructor.generate_instructions(units, plans, context)
-
-            unit_phase: dict[int, int] = {}
-            for phase in phases:
-                for uid in phase.bead_ids:
-                    unit_phase[int(uid)] = phase.phase_number
-
-            unit_deps: dict[int, list[int]] = {i: [] for i in range(len(units))}
-            for edge in edges:
-                unit_deps[edge.from_unit].append(edge.to_unit)
-
-            unit_bead_id: dict[int, str] = {}
-            phase_order: list[int] = []
-            for phase in phases:
-                for uid in phase.bead_ids:
-                    phase_order.append(int(uid))
-            for i in range(len(units)):
-                if i not in phase_order:
-                    phase_order.append(i)
-
-            all_bead_data: list[dict[str, Any]] = []
-            for idx in phase_order:
-                unit = units[idx]
-                plan_md = plans[idx] if idx < len(plans) else ""
-                instr_md = instructions[idx] if idx < len(instructions) else ""
-                phase_num = unit_phase.get(idx, 1)
-
-                dep_bead_ids = []
-                for dep_idx in unit_deps.get(idx, []):
-                    if dep_idx in unit_bead_id:
-                        dep_bead_ids.append(unit_bead_id[dep_idx])
-                    else:
-                        print(f"[fracture] WARNING: dependency unit {dep_idx} not yet created when building bead for unit {idx} — dependency link dropped", file=sys.stderr)
-
-                metadata = FractureMetadata(
-                    file_manifest=unit.file_manifest,
-                    phase=phase_num,
-                    parallel_with=[],  # TODO: populate after all bead IDs are known
-                    decomposition_id=sub_task_hash,
-                    estimated_hours=unit.estimated_hours,
-                )
-                notes_data = {
-                    "fracture": asdict(metadata),
-                    "decomposition_id": sub_task_hash,
-                    "parent_bead_id": bead_id,
-                }
-
-                all_bead_data.append({
-                    "title": unit.title,
-                    "bead_type": "task",
-                    "priority": phase_num,
-                    "deps": dep_bead_ids,
-                    "description": unit.description,
-                    "design": plan_md,
-                    "acceptance": instr_md,
-                    "notes": json.dumps(notes_data),
-                    "_unit_idx": idx,
-                })
-
-            clean_bead_data = [
-                {k: v for k, v in bd.items() if not k.startswith("_")}
-                for bd in all_bead_data
-            ]
-
-            sub_bead_ids = await beads_client.create_beads_transactional(clean_bead_data)
-
-            for i, idx in enumerate(phase_order):
-                if i < len(sub_bead_ids):
-                    unit_bead_id[idx] = sub_bead_ids[i]
-
-            # Step 4b: Close the original bead
+        if not dry_run and sub_bead_ids:
+            # Close the original bead now that sub-beads have been created
             await beads_client.close_bead(
                 bead_id, f"decomposed into sub-beads: {', '.join(sub_bead_ids)}"
             )
 
-            for phase in phases:
-                phase.bead_ids = [
-                    unit_bead_id[int(uid)]
-                    for uid in phase.bead_ids
-                    if int(uid) in unit_bead_id
-                ]
-        else:
-            plans = []
-            instructions = []
-
-        beads_log = [
-            {
-                "bead_id": sub_bead_ids[i] if i < len(sub_bead_ids) else None,
-                "title": units[i].title,
-                "estimated_hours": units[i].estimated_hours,
-            }
-            for i in range(len(units))
-        ]
-        fracture_logger.log_decomposition(
-            task=sub_task,
-            model_used=_model_name(),
-            dry_run=dry_run,
-            beads=beads_log,
-            phases=phases,
-            tc_queries=[],
-            validation=validation_result,
-            recursion_events=[],
-            decomposition_id=sub_task_hash,
-        )
-
         return {
             "parent_bead_id": bead_id,
-            "decomposition_id": sub_task_hash,
+            "decomposition_id": result["decomposition_id"],
             "dry_run": dry_run,
             "sub_bead_ids": sub_bead_ids,
-            "unit_count": len(units),
-            "phases": [asdict(p) for p in phases],
-            "conflicts": validation_result["conflicts"],
+            "unit_count": result["unit_count"],
+            "phases": result["phases"],
+            "conflicts": result["conflicts"],
         }
 
     # -----------------------------------------------------------------------

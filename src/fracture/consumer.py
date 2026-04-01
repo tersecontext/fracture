@@ -6,13 +6,12 @@ the decompose pipeline for each message.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
-import hashlib
 import json
 import logging
 import signal
 import socket
-from dataclasses import asdict
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -20,14 +19,14 @@ import redis.asyncio as aioredis
 from fracture.analyzer import Analyzer
 from fracture.beads import BeadsClient
 from fracture.config import load_config
-from fracture.dependency import derive_dependencies, determine_phases, validate_graph
 from fracture.instructor import Instructor
 from fracture.logger import FractureLogger
 from fracture.model import ModelClient
+from fracture.pipeline import run_decompose_pipeline
 from fracture.planner import Planner
 from fracture.recursion import RecursionEngine
 from fracture.tersecontext import TerseContextClient
-from fracture.types import FractureMetadata, RedisConfig
+from fracture.types import RedisConfig
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +64,7 @@ def _build_artifacts(research: dict | str) -> list[dict]:
         try:
             research = json.loads(research)
         except (json.JSONDecodeError, TypeError):
+            logger.warning("Could not parse research field as JSON")
             return []
     affected = research.get("affected_code", []) if isinstance(research, dict) else []
     return [
@@ -76,207 +76,6 @@ def _build_artifacts(research: dict | str) -> list[dict]:
         for item in affected
         if item.get("file")
     ]
-
-
-# ---------------------------------------------------------------------------
-# Core decompose pipeline (mirrors server.py decompose tool, without MCP layer)
-# ---------------------------------------------------------------------------
-
-
-async def _run_decompose(
-    task: str,
-    project: str,
-    artifacts: list[dict] | None,
-    analyzer: Analyzer,
-    planner: Planner,
-    instructor: Instructor,
-    recursion_engine: RecursionEngine,
-    beads_client: BeadsClient,
-    fracture_logger: FractureLogger,
-    config: Any,
-) -> dict:
-    """Run the full Fracture decompose pipeline and return a result dict.
-
-    Mirrors the non-dry_run path of server.py's decompose tool as closely as
-    possible, including phase-ordered bead creation and dependency wiring.
-    """
-    # Step 1: Analyze task into units
-    units = await analyzer.analyze(task, project, artifacts)
-    if not units:
-        raise ValueError("Analyzer returned no units for the given task.")
-
-    # Step 2: Derive dependency edges from write-set overlap
-    edges = derive_dependencies(units)
-
-    # Step 3: Process recursion (expand compound units)
-    units, edges = await recursion_engine.process(units, edges, project, depth=0)
-
-    # Step 4: Validate graph
-    conflicts_raw = validate_graph(units, edges)
-    validation_result: dict[str, Any] = {
-        "conflicts": [
-            {"unit_a": a, "unit_b": b, "shared_files": list(files)}
-            for a, b, files in conflicts_raw
-        ]
-    }
-
-    # Step 5: Determine execution phases
-    phases = determine_phases(units, edges)
-
-    # Step 6: Idempotency check
-    task_hash = hashlib.sha256(task.encode()).hexdigest()[:12]
-    existing = await beads_client.list_open_beads(decomposition_id=task_hash)
-    if existing:
-        raise ValueError(
-            f"Task already decomposed: {len(existing)} beads open (id={task_hash})"
-        )
-
-    decomposition_id = task_hash
-
-    # Step 7a: Get codebase context
-    # Reuse the TerseContext client already wired into the analyzer if available;
-    # fall back to building a new one from config.
-    try:
-        tc_client: TerseContextClient = analyzer._tc_client  # type: ignore[attr-defined]
-    except AttributeError:
-        tc_client = TerseContextClient(config.tersecontext_endpoint)
-
-    context = await tc_client.get_context(task, project)
-
-    # Step 7b: Generate plans
-    plans = await planner.generate_plans(units, edges, context)
-
-    # Step 7c: Generate CLAUDE.md instructions
-    instructions = await instructor.generate_instructions(units, plans, context)
-
-    # Build unit index → phase number map
-    unit_phase: dict[int, int] = {}
-    for phase in phases:
-        for uid in phase.bead_ids:
-            unit_phase[int(uid)] = phase.phase_number
-
-    # Build unit index → dependency unit indices map
-    # edges: from_unit depends on to_unit (to_unit must finish first)
-    unit_deps: dict[int, list[int]] = {i: [] for i in range(len(units))}
-    for edge in edges:
-        unit_deps[edge.from_unit].append(edge.to_unit)
-
-    # Sort units by phase so dependencies are created before dependents
-    phase_order: list[int] = []
-    for phase in phases:
-        for uid in phase.bead_ids:
-            phase_order.append(int(uid))
-    # Add any units not in phases (edge case)
-    for i in range(len(units)):
-        if i not in phase_order:
-            phase_order.append(i)
-
-    # Build bead data in phase order, wiring deps to already-created bead IDs.
-    # This mirrors server.py exactly: unit_bead_id is populated incrementally,
-    # so dependencies that appear earlier in phase_order are resolvable.
-    unit_bead_id: dict[int, str] = {}
-    all_bead_data: list[dict[str, Any]] = []
-
-    for idx in phase_order:
-        unit = units[idx]
-        plan_md = plans[idx] if idx < len(plans) else ""
-        instr_md = instructions[idx] if idx < len(instructions) else ""
-        phase_num = unit_phase.get(idx, 1)
-
-        # Resolve dependency bead IDs from units created earlier in this loop
-        dep_bead_ids: list[str] = []
-        for dep_idx in unit_deps.get(idx, []):
-            if dep_idx in unit_bead_id:
-                dep_bead_ids.append(unit_bead_id[dep_idx])
-            else:
-                # This case arises when a dependency unit appears later in
-                # phase_order than the dependent, which should not happen if phases
-                # are computed correctly.
-                logger.warning(
-                    "dependency unit %d not yet created when building bead for unit %d"
-                    " — dependency link dropped",
-                    dep_idx,
-                    idx,
-                )
-
-        metadata = FractureMetadata(
-            file_manifest=unit.file_manifest,
-            phase=phase_num,
-            parallel_with=[],  # parallel_with requires a second pass after bead IDs are known; not yet implemented
-            decomposition_id=decomposition_id,
-            estimated_hours=unit.estimated_hours,
-        )
-        notes_data = {"fracture": asdict(metadata), "decomposition_id": decomposition_id}
-
-        all_bead_data.append({
-            "title": unit.title,
-            "bead_type": "task",
-            "priority": phase_num,
-            "deps": dep_bead_ids,
-            "description": unit.description,
-            "design": plan_md,
-            "acceptance": instr_md,
-            "notes": json.dumps(notes_data),
-            "_unit_idx": idx,  # internal key for id mapping; stripped before creation
-        })
-
-    # Strip internal keys before passing to BeadsClient
-    clean_bead_data = [
-        {k: v for k, v in bd.items() if not k.startswith("_")}
-        for bd in all_bead_data
-    ]
-
-    # Step 7d: Create beads transactionally
-    created_ids = await beads_client.create_beads_transactional(clean_bead_data)
-
-    # Map unit index → bead_id (needed for phase population)
-    for i, idx in enumerate(phase_order):
-        if i < len(created_ids):
-            unit_bead_id[idx] = created_ids[i]
-
-    bead_ids = created_ids
-
-    # Populate phase bead_ids with actual bead IDs (mirrors server.py)
-    for phase in phases:
-        phase.bead_ids = [
-            unit_bead_id[int(uid)]
-            for uid in phase.bead_ids
-            if int(uid) in unit_bead_id
-        ]
-
-    # Step 8: Log decomposition
-    beads_log = [
-        {
-            "bead_id": bead_ids[i] if i < len(bead_ids) else None,
-            "title": units[i].title,
-            "estimated_hours": units[i].estimated_hours,
-        }
-        for i in range(len(units))
-    ]
-    model_name = (
-        config.model.claude_model
-        if config.model.provider == "claude"
-        else config.model.local_model
-    )
-    fracture_logger.log_decomposition(
-        task=task,
-        model_used=model_name,
-        dry_run=False,
-        beads=beads_log,
-        phases=phases,
-        tc_queries=[],
-        validation=validation_result,
-        recursion_events=[],
-        decomposition_id=decomposition_id,
-    )
-
-    return {
-        "decomposition_id": decomposition_id,
-        "unit_count": len(units),
-        "bead_ids": bead_ids,
-        "phases": [asdict(p) for p in phases],
-        "conflicts": validation_result["conflicts"],
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -311,27 +110,26 @@ class FractureConsumer:
         fracture_logger = FractureLogger(config.log_dir, config.project_dir)
 
         r = aioredis.from_url(rc.url)
-
-        # Ensure consumer group exists
         try:
-            await r.xgroup_create(rc.input_stream, rc.consumer_group, id="0", mkstream=True)
-            logger.info("Created consumer group %s on %s", rc.consumer_group, rc.input_stream)
-        except aioredis.ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
-                raise
-            logger.info("Consumer group %s already exists", rc.consumer_group)
+            # Ensure consumer group exists
+            try:
+                await r.xgroup_create(rc.input_stream, rc.consumer_group, id="0", mkstream=True)
+                logger.info("Created consumer group %s on %s", rc.consumer_group, rc.input_stream)
+            except aioredis.ResponseError as exc:
+                if "BUSYGROUP" not in str(exc):
+                    raise
+                logger.info("Consumer group %s already exists", rc.consumer_group)
 
-        self._running = True
-        logger.info("Fracture consumer started — listening on %s", rc.input_stream)
+            self._running = True
+            logger.info("Fracture consumer started — listening on %s", rc.input_stream)
 
-        try:
             while self._running:
                 results = await r.xreadgroup(
                     rc.consumer_group,
                     consumer_name,
                     {rc.input_stream: ">"},
                     count=1,
-                    block=rc.block_ms,
+                    block=min(rc.block_ms, 1000),  # cap at 1s for responsive shutdown
                 )
                 if not results:
                     continue
@@ -341,7 +139,8 @@ class FractureConsumer:
                         await self._handle(
                             msg_id, fields, r, rc,
                             analyzer, planner, instructor,
-                            recursion_engine, beads_client, fracture_logger, config,
+                            recursion_engine, beads_client, fracture_logger,
+                            tc_client, config,
                         )
         finally:
             await r.aclose()
@@ -359,6 +158,7 @@ class FractureConsumer:
         recursion_engine: RecursionEngine,
         beads_client: BeadsClient,
         fracture_logger: FractureLogger,
+        tc_client: TerseContextClient,
         config: Any,
     ) -> None:
         """Process a single stream message end-to-end.
@@ -372,10 +172,28 @@ class FractureConsumer:
         project = msg.get("repo", "")
         artifacts = _build_artifacts(msg.get("research", {}))
 
+        # Fix 2: Validate required fields before running pipeline
+        if not task or not project:
+            logger.error(
+                "Message %s missing required fields (task=%r, project=%r) — skipping",
+                msg_id, task, project,
+            )
+            if rc.output_stream:
+                try:
+                    await r.xadd(rc.output_stream, {
+                        "task_id": task_id,
+                        "status": "error",
+                        "error": "missing required fields: description or repo",
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to write to output stream: %s", exc)
+            await r.xack(rc.input_stream, rc.consumer_group, msg_id)
+            return
+
         logger.info("Processing task %s: %.60s...", task_id, task)
 
         try:
-            result = await _run_decompose(
+            result = await run_decompose_pipeline(
                 task=task,
                 project=project,
                 artifacts=artifacts,
@@ -385,6 +203,7 @@ class FractureConsumer:
                 recursion_engine=recursion_engine,
                 beads_client=beads_client,
                 fracture_logger=fracture_logger,
+                tc_client=tc_client,
                 config=config,
             )
             logger.info(
@@ -393,24 +212,30 @@ class FractureConsumer:
             )
 
             if rc.output_stream:
-                await r.xadd(rc.output_stream, {
-                    "task_id": task_id,
-                    "decomposition_id": result["decomposition_id"],
-                    "bead_ids": json.dumps(result["bead_ids"]),
-                    "unit_count": str(result["unit_count"]),
-                    "phases": json.dumps(result["phases"]),
-                    "conflicts": json.dumps(result["conflicts"]),
-                    "status": "ok",
-                })
+                try:
+                    await r.xadd(rc.output_stream, {
+                        "task_id": task_id,
+                        "decomposition_id": result["decomposition_id"],
+                        "bead_ids": json.dumps(result["bead_ids"]),
+                        "unit_count": str(result["unit_count"]),
+                        "phases": json.dumps(result["phases"]),
+                        "conflicts": json.dumps(result["conflicts"]),
+                        "status": "ok",
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to write to output stream: %s", exc)
 
         except Exception as exc:
             logger.error("Failed to decompose task %s: %s", task_id, exc, exc_info=True)
             if rc.output_stream:
-                await r.xadd(rc.output_stream, {
-                    "task_id": task_id,
-                    "status": "error",
-                    "error": str(exc),
-                })
+                try:
+                    await r.xadd(rc.output_stream, {
+                        "task_id": task_id,
+                        "status": "error",
+                        "error": str(exc),
+                    })
+                except Exception as write_exc:
+                    logger.warning("Failed to write error to output stream: %s", write_exc)
         finally:
             # Always ack — failed messages are reported via output stream, not retried
             await r.xack(rc.input_stream, rc.consumer_group, msg_id)
@@ -430,7 +255,12 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    consumer = FractureConsumer()
+
+    parser = argparse.ArgumentParser(description="Fracture Redis Stream consumer")
+    parser.add_argument("--config", default="fracture.yaml", help="Path to fracture.yaml")
+    args = parser.parse_args()
+
+    consumer = FractureConsumer(config_path=args.config)
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
