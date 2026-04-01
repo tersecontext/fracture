@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "fracture",
+  "project_id": "0d9f648c-48c4-41bc-b301-81ebda0e543d"
+}
