@@ -4,8 +4,7 @@ services:
     volumes:
       - .:/app
       - ${BD_BIN:-${HOME}/go/bin/bd}:/usr/local/bin/bd:ro
-    environment:
-      - ANTHROPIC_API_KEY
+      - ${HOME}/.claude:/root/.claude:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
