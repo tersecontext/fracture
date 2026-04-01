@@ -17,7 +17,9 @@ from typing import Any
 
 import yaml
 
-from fracture.types import FractureConfig, ModelConfig
+import socket
+
+from fracture.types import FractureConfig, ModelConfig, RedisConfig
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -110,6 +112,18 @@ def _parse_model(data: dict) -> ModelConfig:
     )
 
 
+def _parse_redis(data: dict) -> RedisConfig:
+    """Build a RedisConfig from the raw YAML dict, applying defaults."""
+    return RedisConfig(
+        url=_get(data, "url", default="redis://localhost:6379"),
+        input_stream=_get(data, "input_stream", default="stream:breakdown-approved"),
+        output_stream=_get(data, "output_stream", default="stream:fracture-results"),
+        consumer_group=_get(data, "consumer_group", default="fracture"),
+        consumer_name=_get(data, "consumer_name", default=socket.gethostname()),
+        block_ms=int(_get(data, "block_ms", default=5000)),
+    )
+
+
 def _validate(config: FractureConfig) -> None:
     """Raise ValueError for invalid configurations."""
     if config.model.provider == "claude":
@@ -175,6 +189,10 @@ def load_config(path: str = "fracture.yaml") -> FractureConfig:
         defaults_section.get("max_correction_rounds", _DEFAULT_MAX_CORRECTION_ROUNDS)
     )
 
+    # Redis (optional)
+    redis_section = raw.get("redis")
+    redis = _parse_redis(redis_section) if redis_section is not None else None
+
     config = FractureConfig(
         tersecontext_endpoint=tersecontext_endpoint,
         project_dir=project_dir,
@@ -184,6 +202,7 @@ def load_config(path: str = "fracture.yaml") -> FractureConfig:
         max_parallel_lanes=max_parallel_lanes,
         max_recursion_depth=max_recursion_depth,
         max_correction_rounds=max_correction_rounds,
+        redis=redis,
     )
 
     _validate(config)
