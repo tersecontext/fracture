@@ -1,4 +1,10 @@
 services:
+  dolt-proxy:
+    image: alpine/socat
+    network_mode: "host"
+    restart: unless-stopped
+    command: TCP-LISTEN:41999,bind=0.0.0.0,reuseaddr,fork TCP:127.0.0.1:41215
+
   fracture:
     build: .
     volumes:
@@ -7,9 +13,14 @@ services:
       - ${HOME}/.claude:/root/.claude:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      BEADS_DOLT_SERVER_HOST: host.docker.internal
+      BEADS_DOLT_SERVER_PORT: "41999"
     networks:
       - breakdown
     restart: unless-stopped
+    depends_on:
+      - dolt-proxy
 
 networks:
   breakdown:

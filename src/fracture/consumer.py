@@ -188,6 +188,7 @@ class FractureConsumer:
         """
         msg = _decode_message(fields)
         task_id = msg.get("task_id", "unknown")
+        feature_name = msg.get("feature_name", "")
         task = msg.get("description", "")
         project = msg.get("repo", "")
         artifacts = _build_artifacts(msg.get("research", {}))
@@ -203,6 +204,7 @@ class FractureConsumer:
                 try:
                     await r.xadd(rc.output_stream, {
                         "task_id": task_id,
+                        "feature_name": feature_name,
                         "status": "error",
                         "error": "missing required fields: description or repo",
                     })
@@ -237,6 +239,7 @@ class FractureConsumer:
                 try:
                     await r.xadd(rc.output_stream, {
                         "task_id": task_id,
+                        "feature_name": feature_name,
                         "decomposition_id": result["decomposition_id"],
                         "bead_ids": json.dumps(result["bead_ids"]),
                         "unit_count": str(result["unit_count"]),
@@ -253,6 +256,7 @@ class FractureConsumer:
                 try:
                     await r.xadd(rc.output_stream, {
                         "task_id": task_id,
+                        "feature_name": feature_name,
                         "status": "error",
                         "error": str(exc),
                     })
