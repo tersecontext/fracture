@@ -118,17 +118,27 @@ class ModelClient:
             "-p",
             "--model", self._config.claude_model,
             "--system-prompt", system_prompt,
-            "--tools", "",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate(input=user_message.encode())
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        _log.info(
+            "claude CLI exit=%d stdout_len=%d stderr_len=%d",
+            proc.returncode, len(stdout), len(stderr),
+        )
+        if stderr:
+            _log.debug("claude CLI stderr: %s", stderr.decode()[:500])
         if proc.returncode != 0:
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}: {stderr.decode()!r}"
             )
-        return stdout.decode().strip()
+        result = stdout.decode().strip()
+        if not result:
+            _log.warning("claude CLI returned empty stdout. stderr: %s", stderr.decode()[:1000])
+        return result
 
     async def _call_local(self, system_prompt: str, user_message: str) -> str:
         """Call an OpenAI-compatible local LLM endpoint."""

@@ -193,6 +193,15 @@ class FractureConsumer:
         project = msg.get("repo", "")
         artifacts = _build_artifacts(msg.get("research", {}))
         context = _parse_tc_context(msg.get("tc_context", ""))
+        # Merge file paths from research artifacts into the file tree
+        # (tc_context has code bodies but not file paths; research has the paths)
+        artifact_paths = [a["path"] for a in artifacts if a.get("path")]
+        if artifact_paths:
+            existing = set(context.file_tree)
+            for p in artifact_paths:
+                if p not in existing:
+                    context.file_tree.append(p)
+                    existing.add(p)
 
         # Fix 2: Validate required fields before running pipeline
         if not task or not project:

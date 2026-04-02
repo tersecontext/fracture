@@ -221,6 +221,14 @@ def _parse_units(response: dict) -> list[Unit]:
     return units
 
 
+def _normalize_path(path: str) -> str:
+    """Strip common absolute prefixes so paths match the relative file tree."""
+    for prefix in ("/app/", "./"):
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+    return path.lstrip("/")
+
+
 def _validate_units(
     units: list[Unit],
     file_tree_set: set[str],
@@ -238,13 +246,21 @@ def _validate_units(
 
     for unit in units:
         fm: FileManifest = unit.file_manifest
+        # Normalize all paths to relative form
+        fm.creates = [_normalize_path(p) for p in fm.creates]
+        fm.modifies = [_normalize_path(p) for p in fm.modifies]
+        fm.reads = [_normalize_path(p) for p in fm.reads]
 
-        # Check modifies paths exist
-        for path in fm.modifies:
-            if path not in file_tree_set:
-                issues.append(
-                    f"{path} listed in modifies but does not exist in codebase"
-                )
+    for unit in units:
+        fm: FileManifest = unit.file_manifest
+
+        # Check modifies paths exist (skip if file tree is empty — no ground truth)
+        if file_tree_set:
+            for path in fm.modifies:
+                if path not in file_tree_set:
+                    issues.append(
+                        f"{path} listed in modifies but does not exist in codebase"
+                    )
 
         # Fix creates→modifies misclassification
         new_creates: list[str] = []

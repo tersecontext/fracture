@@ -6,10 +6,12 @@ services:
     command: TCP-LISTEN:41999,bind=0.0.0.0,reuseaddr,fork TCP:127.0.0.1:41215
 
   fracture:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        beads: ${BEADS_SRC:-${HOME}/workspaces/beads}
     volumes:
       - .:/app
-      - ${BD_BIN:-${HOME}/go/bin/bd}:/usr/local/bin/bd:ro
       - ${HOME}/.claude:/root/.claude:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
