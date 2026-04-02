@@ -109,19 +109,21 @@ class ModelClient:
     async def _call_claude_cli(self, system_prompt: str, user_message: str) -> str:
         """Call the Claude CLI in non-interactive mode using its own credentials.
 
-        Combines system + user message and pipes via stdin to avoid issues with
-        --system-prompt hanging on long/multiline prompts.
+        Passes the system prompt via --system-prompt flag to preserve role
+        separation (critical for JSON-only responses), and pipes the user
+        message via stdin.
         """
-        combined = f"{system_prompt}\n\n---\n{user_message}"
         proc = await asyncio.create_subprocess_exec(
             self._config.claude_cli_path,
             "-p",
             "--model", self._config.claude_model,
+            "--system-prompt", system_prompt,
+            "--tools", "",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate(input=combined.encode())
+        stdout, stderr = await proc.communicate(input=user_message.encode())
         if proc.returncode != 0:
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}: {stderr.decode()!r}"
